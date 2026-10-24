@@ -1,0 +1,50 @@
+#!/usr/bin/env zsh
+
+frequency=50  # Частота циклов в секунду, Гц
+
+base=/sys/class/hwmon/hwmon4
+
+case "$1" in
+    cpu)  targets=(3) ;;
+    case) targets=(2) ;;
+    all)  targets=(2 3) ;;
+    *) print -u2 "Использование: sudo fanmix {cpu|case|all} N"; exit 1 ;;
+esac
+
+if [[ "$2" != <-> ]] || (( $2 < 0 || $2 > 100 )); then
+    print -u2 "N должен быть от 0 до 100"
+    exit 1
+fi
+
+n=$2
+
+set_mode() {
+    for i in "${targets[@]}"; do
+        print -r -- "$1" > "$base/pwm${i}_enable"
+    done
+}
+
+if (( n == 0 )); then
+    set_mode 1
+    exit
+fi
+
+if (( n == 100 )); then
+    set_mode 0
+    exit
+fi
+
+period=$(awk -v f="$frequency" 'BEGIN {printf "%.9f", 1/f}')
+max_time=$(awk -v p="$period" -v n="$n" 'BEGIN {printf "%.9f", p*n/100}')
+auto_time=$(awk -v p="$period" -v n="$n" 'BEGIN {printf "%.9f", p*(100-n)/100}')
+
+trap 'set_mode 1' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+while true; do
+    set_mode 0
+    sleep "$max_time"
+    set_mode 1
+    sleep "$auto_time"
+done

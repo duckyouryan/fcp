@@ -1,0 +1,21 @@
+[Unit]
+Description=Temperature-based fan control (fcptemp)
+After=fcp.service
+Wants=fcp.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/fcptemp
+Restart=on-failure
+RestartSec=2
+Environment=FCPTEMP_CONFIG_PATH=/etc/fcptemp/config.json
+Environment=FCPTEMP_STATE_PATH=/var/lib/fcptemp/state.json
+Environment=FCPTEMP_SOCKET_PATH=/run/fcptemp/control.sock
+StateDirectory=fcptemp
+RuntimeDirectory=fcptemp
+RuntimeDirectoryMode=0755
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

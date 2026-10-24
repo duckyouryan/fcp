@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "fcp hardware/profile configuration",
+  "type": "object",
+  "properties": {
+    "version": {"const": 1},
+    "profile": {"type": "string", "minLength": 1},
+    "hwmon_name": {"type": ["string", "null"]},
+    "hwmon_root": {"type": "string", "default": "/sys/class/hwmon"},
+    "frequency_hz": {"type": "number", "minimum": 0.1, "maximum": 1000},
+    "fans": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "label": {"type": "string", "minLength": 1},
+          "pwm_path": {"type": ["string", "null"]},
+          "rpm_path": {"type": ["string", "null"]},
+          "low": {"type": "integer"},
+          "high": {"type": "integer"}
+        },
+        "required": ["label", "low", "high"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["profile", "frequency_hz", "fans"],
+  "additionalProperties": false
+}

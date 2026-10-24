@@ -1,0 +1,13 @@
+[package]
+name = "fcpctl"
+version = "0.1.0"
+edition.workspace = true
+description = "CLI client for fcp and fcptemp fan-control services"
+
+[[bin]]
+name = "fcpctl"
+path = "src/main.rs"
+
+[dependencies]
+fcp-client = { path = "../fcp-client" }
+serde_json.workspace = true

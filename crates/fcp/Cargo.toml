@@ -1,0 +1,14 @@
+[package]
+name = "fancontrol-custom-pwm"
+version = "0.1.0"
+edition.workspace = true
+description = "Configurable custom PWM fan control for Linux hwmon"
+
+[[bin]]
+name = "fcp"
+path = "src/main.rs"
+
+[dependencies]
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true

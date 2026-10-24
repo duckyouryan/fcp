@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "profile": "Lenovo ThinkCentre M79",
+  "hwmon_name": "it8792",
+  "hwmon_root": "/sys/class/hwmon",
+  "frequency_hz": 50,
+  "fans": [
+    {
+      "label": "CPU_FAN",
+      "pwm_path": "pwm3_enable",
+      "rpm_path": "fan3_input",
+      "low": 1,
+      "high": 0
+    },
+    {
+      "label": "SYS_FAN",
+      "pwm_path": "pwm2_enable",
+      "rpm_path": "fan2_input",
+      "low": 1,
+      "high": 0
+    },
+    {
+      "label": "AUX1_FAN",
+      "pwm_path": null,
+      "rpm_path": "fan1_input",
+      "low": 1,
+      "high": 0
+    },
+    {
+      "label": "AUX2_FAN",
+      "pwm_path": null,
+      "rpm_path": null,
+      "low": 1,
+      "high": 0
+    }
+  ]
+}

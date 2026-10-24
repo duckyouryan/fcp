@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "fans": {
+    "AUX1_FAN": { "mode": "low", "throttle": 50 },
+    "AUX2_FAN": { "mode": "low", "throttle": 50 },
+    "CPU_FAN": { "mode": "low", "throttle": 50 },
+    "SYS_FAN": { "mode": "low", "throttle": 50 }
+  }
+}
