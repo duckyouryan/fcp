@@ -22,6 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     slint::set_xdg_app_id("org.fcp.control")?;
     let clients = ClientSet::from_env().map_err(std::io::Error::other)?;
     let window = MainWindow::new()?;
+    window.set_temperature_unit(preferred_temperature_unit().into());
     let tray = FcpTray::new()?;
     window.window().on_close_requested(|| slint::CloseRequestResponse::HideWindow);
     let snapshot = Arc::new(Mutex::new(Snapshot::default()));
@@ -39,14 +40,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
-    tray.on_refresh_requested({
-        let weak_window = weak_window.clone();
-        let clients = clients.clone();
-        let snapshot = snapshot.clone();
-        let refresh_busy = refresh_busy.clone();
-        let pending_form_reload = pending_form_reload.clone();
-        move || request_refresh(weak_window.clone(), clients.clone(), snapshot.clone(), refresh_busy.clone(), pending_form_reload.clone(), true)
-    });
     tray.on_quit_requested(|| { let _ = slint::quit_event_loop(); });
     tray.show()?;
     window.show()?;
@@ -59,7 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let refresh_busy = refresh_busy.clone();
         let pending_form_reload = pending_form_reload.clone();
         thread::spawn(move || loop {
-            thread::sleep(Duration::from_secs(2));
+            thread::sleep(Duration::from_secs(1));
             request_refresh(weak_window.clone(), clients.clone(), snapshot.clone(), refresh_busy.clone(), pending_form_reload.clone(), false);
         });
     }
@@ -77,14 +70,6 @@ fn bind_window(
     pending_form_reload: Arc<AtomicBool>,
 ) {
     let weak = window.as_weak();
-    window.on_refresh_requested({
-        let weak = weak.clone();
-        let clients = clients.clone();
-        let snapshot = snapshot.clone();
-        let refresh_busy = refresh_busy.clone();
-        let pending_form_reload = pending_form_reload.clone();
-        move |reload_form| request_refresh(weak.clone(), clients.clone(), snapshot.clone(), refresh_busy.clone(), pending_form_reload.clone(), reload_form)
-    });
     window.on_fan_selected({
         let weak = weak.clone();
         let snapshot = snapshot.clone();
@@ -134,7 +119,7 @@ fn bind_window(
                 set_status(&weak, "Select a fan first.");
                 return;
             }
-            if !matches!(mode.as_str(), "low" | "high") {
+            if !matches!(mode.as_str(), "low" | "high" | "percent") {
                 set_status(&weak, "Unsupported fan mode.");
                 return;
             }
@@ -331,12 +316,12 @@ fn fetch_snapshot(clients: &ClientSet) -> Result<(Snapshot, String), String> {
                 Ok(data) => snapshot.rules = value_array(&data, "rules").map_or_else(Vec::new, |values| values.clone()),
                 Err(_) => (),
             }
-            format!("FCP online ({fan_count} fans)\nfcptemp online — automation {}", if snapshot.automation_enabled { "on" } else { "off" })
+            format!("FCP online · {fan_count} fans | fcptemp online · automation {}", if snapshot.automation_enabled { "on" } else { "off" })
         }
         Err(error) if error.contains("No such file or directory") => {
-            format!("FCP online ({fan_count} fans)\nfcptemp service offline")
+            format!("FCP online · {fan_count} fans | fcptemp service offline")
         }
-        Err(_) => format!("FCP online ({fan_count} fans)\nfcptemp connection error"),
+        Err(_) => format!("FCP online · {fan_count} fans | fcptemp connection error"),
     };
     Ok((snapshot, connection_summary))
 }
@@ -348,7 +333,9 @@ fn apply_snapshot(window: &MainWindow, snapshot: &Snapshot, message: &str, reloa
 
     let mut fan_modes = Vec::with_capacity(snapshot.fans.len());
     let mut fan_throttles = Vec::with_capacity(snapshot.fans.len());
+    let mut fan_throttle_values = Vec::with_capacity(snapshot.fans.len());
     let mut fan_rpms = Vec::with_capacity(snapshot.fans.len());
+    let mut fan_rule_states = Vec::with_capacity(snapshot.fans.len());
     for fan in &snapshot.fans {
         let raw_mode = string_field(fan, "mode", "unavailable");
         let mode = match raw_mode.as_str() {
@@ -357,6 +344,7 @@ fn apply_snapshot(window: &MainWindow, snapshot: &Snapshot, message: &str, reloa
             "high" => "High",
             _ => "Unavailable",
         };
+        let throttle_value = fan.get("throttle").and_then(Value::as_i64).unwrap_or(50).clamp(0, 100) as i32;
         let throttle = fan.get("throttle").and_then(Value::as_i64)
             .map(|value| format!("{value}%"))
             .unwrap_or_else(|| "—".to_owned());
@@ -365,7 +353,28 @@ fn apply_snapshot(window: &MainWindow, snapshot: &Snapshot, message: &str, reloa
             .unwrap_or_else(|| "—".to_owned());
         fan_modes.push(mode.to_owned());
         fan_throttles.push(throttle);
+        fan_throttle_values.push(throttle_value);
         fan_rpms.push(rpm);
+        let label = fan.get("label").and_then(Value::as_str).unwrap_or("");
+        let matching_rule = snapshot.rules.iter().find(|entry| {
+            entry.pointer("/rule/fan").and_then(Value::as_str) == Some(label)
+        });
+        let rule_state = match matching_rule {
+            None => "No rule",
+            Some(entry) => {
+                let runtime = entry.get("runtime").unwrap_or(&Value::Null);
+                let runtime_state = string_field(runtime, "status", "waiting");
+                if runtime.get("error").and_then(Value::as_str).is_some()
+                    || runtime_state.eq_ignore_ascii_case("error") {
+                    "Rule error"
+                } else if entry.pointer("/rule/enabled").and_then(Value::as_bool) == Some(true) {
+                    "Rule on"
+                } else {
+                    "Rule off"
+                }
+            }
+        };
+        fan_rule_states.push(rule_state.to_owned());
     }
 
     let sensor_ids: Vec<String> = snapshot.sensors.iter()
@@ -381,8 +390,11 @@ fn apply_snapshot(window: &MainWindow, snapshot: &Snapshot, message: &str, reloa
         let available = sensor.get("available").and_then(Value::as_bool) == Some(true);
         let temperature = sensor.get("temperature_c").and_then(Value::as_f64);
         let healthy = available && temperature.is_some_and(f64::is_finite);
+        let temperature_unit = window.get_temperature_unit().to_string();
         let value = if healthy {
-            format!("{:.1} °C", temperature.unwrap_or_default())
+            let reading_c = temperature.unwrap_or_default();
+            let reading = if temperature_unit == "°F" { reading_c * 9.0 / 5.0 + 32.0 } else { reading_c };
+            format!("{reading:.1} {temperature_unit}")
         } else {
             "—".to_owned()
         };
@@ -432,7 +444,9 @@ fn apply_snapshot(window: &MainWindow, snapshot: &Snapshot, message: &str, reloa
     window.set_fan_labels(model(fan_labels));
     window.set_fan_modes(model(fan_modes));
     window.set_fan_throttles(model(fan_throttles));
+    window.set_fan_throttle_values(int_model(fan_throttle_values));
     window.set_fan_rpms(model(fan_rpms));
+    window.set_fan_rule_states(model(fan_rule_states));
     window.set_sensor_ids(model(sensor_ids));
     window.set_sensor_row_ids(model(sensor_row_ids));
     window.set_sensor_values(model(sensor_values));
@@ -456,7 +470,7 @@ fn apply_snapshot(window: &MainWindow, snapshot: &Snapshot, message: &str, reloa
     window.set_connection_summary(message.into());
     let current_status = window.get_status_message().to_string();
     if lower_message.contains("fcptemp service offline") {
-        window.set_status_message("fcptemp.service is not running. Install or start the service, then refresh.".into());
+        window.set_status_message("fcptemp.service is not running. Start the service to configure temperature control.".into());
     } else if lower_message.contains("fcptemp connection error") {
         window.set_status_message("fcptemp is unreachable. Check systemctl status fcptemp.service.".into());
     } else if current_status.starts_with("Cannot reach fcp.")
@@ -478,11 +492,6 @@ fn apply_snapshot(window: &MainWindow, snapshot: &Snapshot, message: &str, reloa
 }
 
 fn load_selected_fan(window: &MainWindow, snapshot: &Snapshot, fan_label: &str) {
-    if let Some(fan) = snapshot.fans.iter().find(|fan| fan.get("label").and_then(Value::as_str) == Some(fan_label)) {
-        if let Some(throttle) = fan.get("throttle").and_then(Value::as_i64) {
-            window.set_manual_throttle(throttle.clamp(0, 100) as i32);
-        }
-    }
     let rule_entry = snapshot.rules.iter().find(|entry| {
         entry.pointer("/rule/fan").and_then(Value::as_str) == Some(fan_label)
     });
@@ -496,8 +505,6 @@ fn load_selected_fan(window: &MainWindow, snapshot: &Snapshot, fan_label: &str) 
         window.set_curve_type("linear".into());
         window.set_min_temp_text("30".into());
         window.set_max_temp_text("70".into());
-        window.set_min_throttle(20);
-        window.set_max_throttle(100);
         window.set_exponent_text("2".into());
         window.set_points_text("40:50".into());
         return;
@@ -518,8 +525,6 @@ fn load_selected_fan(window: &MainWindow, snapshot: &Snapshot, fan_label: &str) 
     window.set_curve_type(curve_type.into());
     window.set_min_temp_text(number_field(curve, "min_temp_c", 30.0).into());
     window.set_max_temp_text(number_field(curve, "max_temp_c", 70.0).into());
-    window.set_min_throttle(curve.get("min_throttle").and_then(Value::as_i64).unwrap_or(20).clamp(0, 100) as i32);
-    window.set_max_throttle(curve.get("max_throttle").and_then(Value::as_i64).unwrap_or(100).clamp(0, 100) as i32);
     window.set_exponent_text(number_field(curve, "exponent", 2.0).into());
     if let Some(points) = curve.get("points").and_then(Value::as_array) {
         let formatted = points.iter().filter_map(|point| {
@@ -654,6 +659,27 @@ fn set_status(weak: &Weak<MainWindow>, message: &str) {
             window.set_status_message(message.into());
         }
     });
+}
+
+
+fn preferred_temperature_unit() -> &'static str {
+    for key in ["LC_MEASUREMENT", "LC_ALL", "LANG"] {
+        let Ok(locale) = std::env::var(key) else { continue; };
+        let normalized = locale.replace('-', "_");
+        let base = normalized.split(['.', '@']).next().unwrap_or("");
+        let region = base.split('_').nth(1).unwrap_or("").to_ascii_uppercase();
+        if matches!(region.as_str(), "US" | "BS" | "BZ" | "KY" | "LR" | "PW") {
+            return "°F";
+        }
+        if !region.is_empty() {
+            return "°C";
+        }
+    }
+    "°C"
+}
+
+fn int_model(values: Vec<i32>) -> ModelRc<i32> {
+    ModelRc::new(VecModel::from(values))
 }
 
 fn model(values: Vec<String>) -> ModelRc<SharedString> {
