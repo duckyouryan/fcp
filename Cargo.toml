@@ -5,8 +5,9 @@ members = [
     "crates/fcp-client",
     "crates/fcptemp",
     "crates/fcpctl",
+    "crates/fcp-gui",
 ]
-default-members = ["crates/fcp", "crates/fcptemp", "crates/fcp-client", "crates/fcpctl"]
+default-members = ["crates/fcp", "crates/fcptemp", "crates/fcp-client", "crates/fcpctl", "crates/fcp-gui"]
 
 [workspace.package]
 edition = "2021"

@@ -5,7 +5,7 @@ Rust workspace for custom PWM control and temperature-based automatic fan regula
 - `fcp` directly controls configured `hwmon` PWM-enable files and reports RPM.
 - `fcptemp` owns temperature rules and sends calculated throttle values to `fcp` over its Unix socket. It never writes hardware sysfs files itself.
 - `fcp-client` contains shared JSON Lines socket-client code and the safe handoff from automatic to manual control.
-- `fcpctl` is the CLI for both services; the planned Slint GUI will reuse `fcp-client`.
+- `fcpctl` is the CLI for both services. `fcp-gui` is a Slint desktop client with a system-tray icon and uses the same `fcp-client` crate.
 
 Manual control remains in `fcp`. For automatic mode, a client installs a rule in `fcptemp` and enables the rule plus global automation. Switching back to manual mode means disabling the corresponding `fcptemp` rule first, then setting the fan directly through `fcp`.
 
@@ -15,7 +15,7 @@ Manual control remains in `fcp`. For automatic mode, a client installs a rule in
 cargo build --release
 ```
 
-The default workspace members build `fcp`, `fcptemp`, `fcpctl`, and the shared `fcp-client` library.
+The default workspace members build `fcp`, `fcptemp`, `fcpctl`, `fcp-gui`, and the shared `fcp-client` library. The first GUI build also compiles Slint and its Wayland/software-rendering dependencies.
 
 Binaries:
 
@@ -23,6 +23,7 @@ Binaries:
 target/release/fcp
 target/release/fcptemp
 target/release/fcpctl
+target/release/fcp-gui
 ```
 
 ## Workspace layout
@@ -32,14 +33,15 @@ crates/
 ├── fcp/           # Existing low-level PWM service
 ├── fcp-client/    # Shared transport, API helpers and manual/automatic handoff
 ├── fcptemp/       # Temperature discovery, curves, API and service
-└── fcpctl/        # CLI for both services
+├── fcpctl/        # CLI for both services
+└── fcp-gui/       # Slint GUI and system tray
 schemas/           # API and configuration JSON Schemas
 deploy/systemd/    # Service units
 scripts/           # Existing fanmix helper
 docs/              # Architecture and API documentation
 ```
 
-The planned Slint-based `fcp-gui` will use `fcp-client` rather than implementing the socket protocol independently. The CLI and GUI will share socket setup, error handling, and manual/automatic handoff behavior.
+The Slint-based `fcp-gui` uses `fcp-client` rather than implementing the socket protocol independently. The CLI and GUI share socket setup, error handling, and manual/automatic handoff behavior.
 
 ## `fcp` installation
 
@@ -56,6 +58,16 @@ sudo systemctl enable --now fcp.service
 The unit uses `/etc/fcp/config.json`, `/var/lib/fcp/state.json`, and `/run/fcp/control.sock`.
 
 ## `fcptemp` installation
+
+The GUI expects the `fcptemp` API service to be running. A GUI started before the system service may select the per-user socket; restart the GUI after starting the system unit so it reconnects to `/run/fcptemp/control.sock`.
+
+Quick install from the repository root (builds only `fcptemp`, preserves an existing config, and does **not** enable automation):
+
+```sh
+./scripts/install-fcptemp-service.sh
+```
+
+Equivalent manual steps:
 
 ```sh
 sudo install -Dm755 target/release/fcptemp /usr/local/bin/fcptemp
@@ -98,6 +110,17 @@ cargo build --release
 Manual commands (`fan set` and `fan mode`) use shared `fcp-client` logic: if `fcptemp` has an enabled rule for that fan, the client disables that rule before changing `fcp`. If the `fcptemp` socket cannot be reached, the CLI warns and still applies the manual setting; check that automation is not active via a different socket. If a rule was found but could not be disabled, the manual change is cancelled.
 
 `fcpctl` honors `FCP_SOCKET_PATH` and `FCPTEMP_SOCKET_PATH`. Command-line options `--fcp-socket PATH` and `--fcptemp-socket PATH` override paths for one invocation. Without overrides, the client prefers active system service sockets at `/run/fcp/control.sock` and `/run/fcptemp/control.sock`; otherwise it uses the user-instance defaults described above.
+
+## `fcp-gui` desktop client
+
+```sh
+cargo build --release -p fcp-gui
+./target/release/fcp-gui
+```
+
+The GUI provides manual fan control, temperature sensor status, rule editing for linear/power/points curves, explicit global and per-rule automation toggles, and a system-tray menu. Points are entered as `temperature:throttle` pairs, e.g. `40:50, 50:75`. Rule saves are always disabled first; enabling a rule is a separate action. Closing the main window hides it to the tray; use the tray's Quit command to exit. See `crates/fcp-gui/README.md`.
+
+The GUI forces Slint's `fluent-dark` widget style and a dark application palette; there is no light-theme mode. It uses the cross-platform Winit backend (Wayland/X11 on Linux) and software renderer to avoid a GPU rendering dependency. The system tray requires a host implementing StatusNotifierItem/AppIndicator, such as KDE Plasma.
 
 ## `fcptemp` protocol
 

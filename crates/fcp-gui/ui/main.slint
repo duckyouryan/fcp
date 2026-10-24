@@ -1,0 +1,646 @@
+import { Button, ComboBox, LineEdit, ScrollView, SpinBox } from "std-widgets.slint";
+
+// FCP Control uses a restrained service-console palette. The blue accent marks
+// selection and primary actions; green/amber communicate health, not decoration.
+export component MainWindow inherits Window {
+    title: "FCP Control";
+    // Preferred dimensions define the initial size. Minimum dimensions only
+    // constrain how far the user can shrink the window; they do not lock it.
+    preferred-width: 1000px;
+    preferred-height: 800px;
+    min-width: 800px;
+    min-height: 520px;
+    background: #101722;
+
+    in-out property <string> page: "fans";
+    in-out property <string> status-message: "Ready.";
+    in-out property <string> connection-summary: "Connecting to fcp and fcptemp…";
+    in-out property <string> selected-fan: "";
+    in-out property <[string]> fan-labels: [];
+    in-out property <[string]> fan-modes: [];
+    in-out property <[string]> fan-throttles: [];
+    in-out property <[string]> fan-rpms: [];
+    in-out property <[string]> sensor-ids: [];
+    in-out property <[string]> sensor-row-ids: [];
+    in-out property <[string]> sensor-values: [];
+    in-out property <[string]> sensor-details: [];
+    in-out property <[string]> sensor-states: [];
+    in-out property <[string]> rule-fans: [];
+    in-out property <[string]> rule-details: [];
+    in-out property <[string]> rule-states: [];
+    in-out property <bool> automation-enabled: false;
+    in-out property <bool> fcptemp-connected: false;
+    in-out property <string> automation-label: "Automation unavailable";
+    in-out property <int> manual-throttle: 50;
+
+    in-out property <string> selected-sensor: "";
+    in-out property <string> curve-type: "linear";
+    in-out property <string> min-temp-text: "30";
+    in-out property <string> max-temp-text: "70";
+    in-out property <int> min-throttle: 20;
+    in-out property <int> max-throttle: 100;
+    in-out property <string> exponent-text: "2";
+    in-out property <string> points-text: "40:50";
+    in-out property <bool> selected-rule-exists: false;
+    in-out property <bool> selected-rule-enabled: false;
+    in-out property <string> selected-rule-summary: "No rule for this fan";
+
+    callback refresh-requested(bool);
+    callback fan-selected(string);
+    callback set-throttle(string, int);
+    callback set-mode(string, string);
+    callback kickstart(string);
+    callback toggle-automation(bool);
+    callback save-rule(string, string, string, string, string, int, int, string, string);
+    callback toggle-rule(string, bool);
+    callback delete-rule(string);
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // Application header
+        Rectangle {
+            height: 70px;
+            vertical-stretch: 0;
+            background: #17263a;
+            HorizontalLayout {
+                padding-left: 22px;
+                padding-right: 18px;
+                spacing: 13px;
+                alignment: center;
+
+                Rectangle {
+                    width: 38px;
+                    height: 38px;
+                    border-radius: 9px;
+                    background: #347fce;
+                    Text {
+                        text: "F";
+                        width: 100%;
+                        height: 100%;
+                        color: #ffffff;
+                        font-size: 23px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 1px;
+                    alignment: center;
+                    Text { text: "FCP Control"; color: #f2f6fc; font-size: 20px; font-weight: 700; }
+                    Text { text: "Fan control and thermal policy"; color: #a8bad0; font-size: 12px; }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                Text {
+                    text: root.connection-summary;
+                    width: 250px;
+                    color: #c7d4e4;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
+
+                Rectangle {
+                    width: 170px;
+                    height: 32px;
+                    border-radius: 7px;
+                    background: !root.fcptemp-connected ? #3b332b : (root.automation-enabled ? #244c41 : #29384b);
+                    border-width: 1px;
+                    border-color: !root.fcptemp-connected ? #68543a : (root.automation-enabled ? #367d65 : #3a4b60);
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 7px;
+                        alignment: center;
+                        Rectangle {
+                            width: 7px;
+                            height: 7px;
+                            border-radius: 4px;
+                            background: !root.fcptemp-connected ? #e0b16b : (root.automation-enabled ? #6fd2a3 : #91a1b6);
+                        }
+                        Text {
+                            text: root.automation-label;
+                            color: #eef4fb;
+                            font-size: 11px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                Button {
+                    text: "Refresh";
+                    clicked => { root.refresh-requested(true); }
+                }
+            }
+        }
+
+        // Primary navigation uses native Slint buttons for keyboard and focus support.
+        Rectangle {
+            height: 48px;
+            vertical-stretch: 0;
+            background: #1c293a;
+            HorizontalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                spacing: 8px;
+                alignment: center;
+                Button {
+                    text: "Fans and manual PWM";
+                    primary: root.page == "fans";
+                    clicked => { root.page = "fans"; }
+                }
+                Button {
+                    text: "Temperature rules";
+                    primary: root.page == "temperature";
+                    clicked => { root.page = "temperature"; }
+                }
+            }
+        }
+
+        if root.page == "fans": ScrollView {
+            horizontal-stretch: 1;
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding: 18px;
+                spacing: 14px;
+
+                // Fan table: tight rows, aligned fields, no unused vertical stretch.
+                Rectangle {
+                    horizontal-stretch: 1;
+                    vertical-stretch: 0;
+                    background: #192638;
+                    border-color: #30445b;
+                    border-width: 1px;
+                    border-radius: 10px;
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 9px;
+                        HorizontalLayout {
+                            alignment: center;
+                            Text { text: "Detected fans"; font-size: 17px; font-weight: 700; color: #edf3fb; }
+                            Rectangle { horizontal-stretch: 1; }
+                            Text { text: "Live status"; color: #94a9c2; font-size: 11px; }
+                        }
+
+                        Rectangle { height: 1px; background: #2b3d52; }
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            height: 24px;
+                            Text { text: "Fan"; width: 225px; color: #91a5bd; font-size: 11px; vertical-alignment: center; }
+                            Text { text: "Mode"; width: 150px; color: #91a5bd; font-size: 11px; vertical-alignment: center; }
+                            Text { text: "Throttle"; width: 145px; color: #91a5bd; font-size: 11px; vertical-alignment: center; }
+                            Text { text: "RPM"; horizontal-stretch: 1; color: #91a5bd; font-size: 11px; vertical-alignment: center; }
+                        }
+
+                        for fan-label[index] in root.fan-labels: Rectangle {
+                            height: 36px;
+                            vertical-stretch: 0;
+                            border-radius: 5px;
+                            background: root.selected-fan == fan-label ? #2a4059 : (Math.mod(index, 2) == 0 ? #202d3e : #1d2a3a);
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                Text { text: fan-label; width: 225px; color: #e5edf7; font-size: 13px; font-weight: 600; vertical-alignment: center; }
+                                Text { text: root.fan-modes[index]; width: 150px; color: root.fan-modes[index] == "Unavailable" ? #e2b56d : #c0cede; font-size: 12px; vertical-alignment: center; }
+                                Text { text: root.fan-throttles[index]; width: 145px; color: #c0cede; font-size: 12px; vertical-alignment: center; }
+                                Text { text: root.fan-rpms[index]; horizontal-stretch: 1; color: #edf3fb; font-size: 12px; vertical-alignment: center; }
+                            }
+                        }
+
+                        if root.fan-labels.length == 0: Text {
+                            text: "No fans were reported by fcp. Check fcp.service and its socket.";
+                            color: #e2b56d;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                // Manual settings are a separate task from monitoring.
+                Rectangle {
+                    horizontal-stretch: 1;
+                    vertical-stretch: 0;
+                    background: #192638;
+                    border-color: #30445b;
+                    border-width: 1px;
+                    border-radius: 10px;
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 12px;
+                        Text { text: "Manual control"; font-size: 17px; font-weight: 700; color: #edf3fb; }
+                        Text { text: "Manual commands disable an enabled temperature rule for this fan first."; color: #9eafc4; font-size: 12px; }
+
+                        HorizontalLayout {
+                            spacing: 18px;
+                            alignment: center;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 5px;
+                                Text { text: "Selected fan"; color: #a9bad0; font-size: 11px; }
+                                ComboBox {
+                                    model: root.fan-labels;
+                                    current-value: root.selected-fan;
+                                    horizontal-stretch: 1;
+                                    selected(value) => {
+                                        root.selected-fan = value;
+                                        root.fan-selected(value);
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 2;
+                                spacing: 5px;
+                                Text { text: "Custom PWM duty cycle"; color: #a9bad0; font-size: 11px; }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: center;
+                                    SpinBox {
+                                        minimum: 0;
+                                        maximum: 100;
+                                        value: root.manual-throttle;
+                                        horizontal-stretch: 1;
+                                        edited(value) => { root.manual-throttle = value; }
+                                    }
+                                    Text { text: "%"; color: #c0cede; vertical-alignment: center; }
+                                    Button { text: "Apply"; primary: true; clicked => { root.set-throttle(root.selected-fan, root.manual-throttle); } }
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: #2b3d52; }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Button { text: "Low"; clicked => { root.set-mode(root.selected-fan, "low"); } }
+                            Button { text: "High"; clicked => { root.set-mode(root.selected-fan, "high"); } }
+                            Button { text: "Kickstart"; clicked => { root.kickstart(root.selected-fan); } }
+                            Rectangle { horizontal-stretch: 1; }
+                            Text { text: "Low/High use board states; percentage uses custom PWM."; color: #8fa3bb; font-size: 11px; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.page == "temperature": ScrollView {
+            horizontal-stretch: 1;
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding: 18px;
+                spacing: 13px;
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    vertical-stretch: 0;
+                    background: #192638;
+                    border-color: root.automation-enabled ? #367c65 : #30445b;
+                    border-width: 1px;
+                    border-radius: 10px;
+                    HorizontalLayout {
+                        padding: 15px;
+                        spacing: 12px;
+                        alignment: center;
+                        Rectangle {
+                            width: 4px;
+                            height: 42px;
+                            border-radius: 2px;
+                            background: root.automation-enabled ? #63c69a : #6c829d;
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 3px;
+                            Text { text: "Automatic temperature control"; font-size: 16px; font-weight: 700; color: #edf3fb; }
+                            Text {
+                                text: !root.fcptemp-connected ? "fcptemp is unavailable. Start its service to manage temperature rules." : (root.automation-enabled ? "On. Enabled rules can change fan speed." : "Off. Configure rules without changing fan speeds.");
+                                color: #a8b8cd;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                        }
+                        Button {
+                            text: !root.fcptemp-connected ? "Service unavailable" : (root.automation-enabled ? "Turn off" : "Enable automation");
+                            enabled: root.fcptemp-connected;
+                            primary: root.fcptemp-connected && !root.automation-enabled;
+                            clicked => { root.toggle-automation(!root.automation-enabled); }
+                        }
+                    }
+                }
+
+                // Sensors and rules share a row so the user can compare source data with policy.
+                HorizontalLayout {
+                    spacing: 13px;
+                    vertical-stretch: 0;
+
+                    Rectangle {
+                        horizontal-stretch: 3;
+                        vertical-stretch: 0;
+                        background: #192638;
+                        border-color: #30445b;
+                        border-width: 1px;
+                        border-radius: 10px;
+                        VerticalLayout {
+                            padding: 15px;
+                            spacing: 8px;
+                            Text { text: "Temperature sensors"; font-size: 16px; font-weight: 700; color: #edf3fb; }
+                            Text { text: "Unavailable readings include the driver's reason."; color: #94a9c2; font-size: 11px; }
+                            Rectangle { height: 1px; background: #2b3d52; }
+
+                            for sensor-id[index] in root.sensor-row-ids: Rectangle {
+                                vertical-stretch: 0;
+                                border-radius: 5px;
+                                background: Math.mod(index, 2) == 0 ? #202d3e : #1d2a3a;
+                                HorizontalLayout {
+                                    padding: 8px;
+                                    spacing: 9px;
+                                    alignment: center;
+                                    Rectangle {
+                                        width: 6px;
+                                        height: 6px;
+                                        border-radius: 3px;
+                                        background: root.sensor-states[index] == "ok" ? #62c49a : #e5b765;
+                                    }
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 2px;
+                                        Text { text: sensor-id; color: #e1eaf5; font-size: 12px; }
+                                        if root.sensor-states[index] != "ok": Text {
+                                            text: root.sensor-details[index];
+                                            color: #dfb971;
+                                            font-size: 10px;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                    Text {
+                                        text: root.sensor-values[index];
+                                        width: 76px;
+                                        color: #f0f5fc;
+                                        font-size: 12px;
+                                        horizontal-alignment: right;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            if root.sensor-row-ids.length == 0: Text {
+                                text: "No temperature sensors found.";
+                                color: #e2b56d;
+                                font-size: 12px;
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 2;
+                        vertical-stretch: 0;
+                        background: #192638;
+                        border-color: #30445b;
+                        border-width: 1px;
+                        border-radius: 10px;
+                        VerticalLayout {
+                            padding: 15px;
+                            spacing: 8px;
+                            Text { text: "Configured rules"; font-size: 16px; font-weight: 700; color: #edf3fb; }
+                            Text { text: "One temperature rule per fan."; color: #94a9c2; font-size: 11px; }
+                            Rectangle { height: 1px; background: #2b3d52; }
+
+                            for rule-fan[index] in root.rule-fans: Rectangle {
+                                vertical-stretch: 0;
+                                border-radius: 5px;
+                                background: #202d3e;
+                                VerticalLayout {
+                                    padding: 10px;
+                                    spacing: 5px;
+                                    HorizontalLayout {
+                                        alignment: center;
+                                        Text { text: rule-fan; color: #e5edf7; font-size: 12px; font-weight: 600; }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        Rectangle {
+                                            border-radius: 4px;
+                                            background: root.rule-states[index] == "Enabled" ? #244c41 : (root.rule-states[index] == "Error" ? #59442a : #2c3b4f);
+                                            HorizontalLayout {
+                                                padding-left: 6px;
+                                                padding-right: 6px;
+                                                padding-top: 3px;
+                                                padding-bottom: 3px;
+                                                Text {
+                                                    text: root.rule-states[index];
+                                                    color: root.rule-states[index] == "Enabled" ? #8ce0b5 : (root.rule-states[index] == "Error" ? #f0c575 : #bdcadd);
+                                                    font-size: 10px;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Text { text: root.rule-details[index]; color: #a9bbd0; font-size: 11px; wrap: word-wrap; }
+                                }
+                            }
+
+                            if root.rule-fans.length == 0: VerticalLayout {
+                                spacing: 5px;
+                                Text { text: "No rules yet"; color: #e5edf7; font-size: 13px; font-weight: 600; }
+                                Text { text: "Choose a fan and sensor below to create one."; color: #94a9c2; font-size: 11px; wrap: word-wrap; }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    vertical-stretch: 0;
+                    background: #192638;
+                    border-color: #30445b;
+                    border-width: 1px;
+                    border-radius: 10px;
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 12px;
+                        HorizontalLayout {
+                            alignment: center;
+                            Text { text: "Rule editor"; font-size: 17px; font-weight: 700; color: #edf3fb; }
+                            Rectangle { horizontal-stretch: 1; }
+                            Text {
+                                text: root.selected-rule-exists ? (root.selected-rule-enabled ? "Rule enabled" : "Rule disabled") : "New rule";
+                                color: root.selected-rule-enabled ? #78d4a8 : #9fb1c8;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Text { text: "Saving creates or updates a disabled rule. Review it before enabling."; color: #d5b875; font-size: 11px; wrap: word-wrap; }
+
+                        HorizontalLayout {
+                            spacing: 14px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 5px;
+                                Text { text: "Control this fan"; color: #a9bad0; font-size: 11px; }
+                                ComboBox {
+                                    model: root.fan-labels;
+                                    current-value: root.selected-fan;
+                                    horizontal-stretch: 1;
+                                    selected(value) => {
+                                        root.selected-fan = value;
+                                        root.fan-selected(value);
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 5px;
+                                Text { text: "Read temperature from"; color: #a9bad0; font-size: 11px; }
+                                ComboBox {
+                                    model: root.sensor-ids;
+                                    current-value: root.selected-sensor;
+                                    horizontal-stretch: 1;
+                                    selected(value) => { root.selected-sensor = value; }
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: #2b3d52; }
+
+                        HorizontalLayout {
+                            spacing: 14px;
+                            VerticalLayout {
+                                width: 210px;
+                                spacing: 5px;
+                                Text { text: "Curve shape"; color: #a9bad0; font-size: 11px; }
+                                ComboBox {
+                                    model: ["Linear", "Power", "Points"];
+                                    current-value: root.curve-type == "linear" ? "Linear" : (root.curve-type == "power" ? "Power" : "Points");
+                                    horizontal-stretch: 1;
+                                    selected(value) => { root.curve-type = value == "Linear" ? "linear" : (value == "Power" ? "power" : "points"); }
+                                }
+                            }
+                            if root.curve-type == "power": VerticalLayout {
+                                width: 210px;
+                                spacing: 5px;
+                                Text { text: "Shape exponent (n)"; color: #a9bad0; font-size: 11px; }
+                                LineEdit {
+                                    text: root.exponent-text;
+                                    edited(value) => { root.exponent-text = value; }
+                                }
+                                Text { text: "Higher n delays the rise until hotter temperatures."; color: #8fa3bb; font-size: 10px; wrap: word-wrap; }
+                            }
+                            if root.curve-type == "points": VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 5px;
+                                Text { text: "Temperature : throttle points (up to 8)"; color: #a9bad0; font-size: 11px; }
+                                LineEdit {
+                                    text: root.points-text;
+                                    placeholder-text: "40:50, 50:75";
+                                    edited(value) => { root.points-text = value; }
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 12px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 5px;
+                                Text { text: "Minimum temperature (°C)"; color: #a9bad0; font-size: 11px; }
+                                LineEdit { text: root.min-temp-text; edited(value) => { root.min-temp-text = value; } }
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 5px;
+                                Text { text: "Maximum temperature (°C)"; color: #a9bad0; font-size: 11px; }
+                                LineEdit { text: root.max-temp-text; edited(value) => { root.max-temp-text = value; } }
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 5px;
+                                Text { text: "Minimum throttle (%)"; color: #a9bad0; font-size: 11px; }
+                                SpinBox { minimum: 0; maximum: 100; value: root.min-throttle; edited(value) => { root.min-throttle = value; } }
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 5px;
+                                Text { text: "Maximum throttle (%)"; color: #a9bad0; font-size: 11px; }
+                                SpinBox { minimum: 0; maximum: 100; value: root.max-throttle; edited(value) => { root.max-throttle = value; } }
+                            }
+                        }
+
+                        Rectangle {
+                            background: #202d3e;
+                            border-radius: 5px;
+                            VerticalLayout {
+                                padding: 9px;
+                                Text { text: root.selected-rule-summary; color: #b9c8da; font-size: 11px; wrap: word-wrap; }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Button {
+                                text: "Save rule disabled";
+                                enabled: root.fcptemp-connected && root.selected-sensor != "";
+                                primary: true;
+                                clicked => {
+                                    root.save-rule(root.selected-fan, root.selected-sensor, root.curve-type,
+                                        root.min-temp-text, root.max-temp-text, root.min-throttle,
+                                        root.max-throttle, root.exponent-text, root.points-text);
+                                }
+                            }
+                            Button {
+                                text: "Enable rule";
+                                enabled: root.fcptemp-connected && root.selected-rule-exists && !root.selected-rule-enabled;
+                                clicked => { root.toggle-rule(root.selected-fan, true); }
+                            }
+                            Button {
+                                text: "Disable rule";
+                                enabled: root.fcptemp-connected && root.selected-rule-exists && root.selected-rule-enabled;
+                                clicked => { root.toggle-rule(root.selected-fan, false); }
+                            }
+                            Button {
+                                text: "Delete rule";
+                                enabled: root.fcptemp-connected && root.selected-rule-exists;
+                                clicked => { root.delete-rule(root.selected-fan); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 32px;
+            vertical-stretch: 0;
+            background: #1a2636;
+            VerticalLayout {
+                spacing: 0px;
+                Rectangle { height: 1px; background: #2b3c51; }
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    Text { text: root.status-message; color: #b8c7d9; font-size: 11px; vertical-alignment: center; overflow: elide; }
+                }
+            }
+        }
+    }
+}
+
+export component FcpTray inherits SystemTrayIcon {
+    icon: @image-url("assets/tray.png");
+    tooltip: "FCP Control";
+    title: "FCP Control";
+
+    Menu {
+        MenuItem { title: "Open window"; activated => { root.open-requested(); } }
+        MenuItem { title: "Refresh status"; activated => { root.refresh-requested(); } }
+        MenuSeparator { }
+        MenuItem { title: "Quit"; activated => { root.quit-requested(); } }
+    }
+
+    callback open-requested();
+    callback refresh-requested();
+    callback quit-requested();
+    clicked => { root.open-requested(); }
+}

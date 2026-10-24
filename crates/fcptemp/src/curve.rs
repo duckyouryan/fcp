@@ -124,13 +124,6 @@ impl Curve {
         }
     }
 
-    pub fn kind(&self) -> &'static str {
-        match self {
-            Self::Linear { .. } => "linear",
-            Self::Power { .. } => "power",
-            Self::Points { .. } => "points",
-        }
-    }
 }
 
 fn interpolate(start: f64, end: f64, fraction: f64) -> u8 {

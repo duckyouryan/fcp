@@ -1,0 +1,18 @@
+[package]
+name = "fcp-gui"
+version = "0.1.0"
+edition.workspace = true
+description = "Slint desktop client for fcp and fcptemp"
+build = "build.rs"
+
+[[bin]]
+name = "fcp-gui"
+path = "src/main.rs"
+
+[dependencies]
+fcp-client = { path = "../fcp-client" }
+serde_json.workspace = true
+slint = { version = "1.18.1", default-features = false, features = ["std", "compat-1-18", "system-tray", "backend-winit", "renderer-software"] }
+
+[build-dependencies]
+slint-build = "1.18.1"

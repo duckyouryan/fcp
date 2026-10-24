@@ -3,7 +3,7 @@ use crate::config::Rule;
 use crate::sensors;
 use fcp_client::{ensure_ok, request as socket_request};
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 
