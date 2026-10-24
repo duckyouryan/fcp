@@ -1,5 +1,7 @@
 [Unit]
 Description=Temperature-based fan control (fcptemp)
+# fcptemp calls the fcp Unix-socket API, so FCP must start first.
+# fcp.service's ExecStartPost waits until its socket has actually been bound.
 After=fcp.service
 Wants=fcp.service
 
