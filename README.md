@@ -1,191 +1,197 @@
-# Fan Control
+# fcp
 
-Rust workspace for custom PWM control and temperature-based automatic fan regulation on Linux.
+Fan control for motherboards that only have "slow" and "fast".
 
-- `fcp` directly controls configured `hwmon` PWM-enable files and reports RPM.
-- `fcptemp` owns temperature rules and sends calculated throttle values to `fcp` over its Unix socket. It never writes hardware sysfs files itself.
-- `fcp-client` contains shared JSON Lines socket-client code and the safe handoff from automatic to manual control.
-- `fcpctl` is the CLI for both services. `fcp-gui` is a Slint desktop client with a system-tray icon and uses the same `fcp-client` crate.
+`fcp` lets you set any fan speed from 0 to 100%, or let the CPU temperature
+decide, on boards where the normal Linux fan tools do nothing. It is one small
+program with no dependencies.
 
-Manual control remains in `fcp`. For automatic mode, a client installs a rule in `fcptemp` and enables the rule plus global automation. Switching back to manual mode means disabling the corresponding `fcptemp` rule first, then setting the fan directly through `fcp`.
+Written for, and used on, a Lenovo ThinkCentre M79 (ITE it8792 fan controller,
+AMD CPU). It should help on any board with the same symptoms, but that is untested.
 
-## Build
+## The problem
+
+On some boards you cannot choose a fan speed. You write a number into the
+fan's `pwm` file and nothing happens. The only thing the fan controller reacts
+to is its mode switch, `pwmN_enable`:
+
+- mode `0`: full speed;
+- mode `1` and `2`: "automatic". The board decides the speed from a temperature
+  sensor of its own choosing. On the M79 that sensor is not the CPU, so under
+  load the fans can stay slow while the CPU gets hot.
+
+## What fcp does
+
+It flips the mode switch between slowest and fastest, 10 times a second. A fan
+cannot speed up and slow down that fast, so it settles at a speed in between.
+
+- You ask for **25%**: every 100 ms, the fan gets 25 ms of "fast" and 75 ms of "slow".
+- You ask for **0%**: always "slow". **100%**: always "fast". No flipping.
+
+On top of that, a fan can follow a **temperature curve**. With `curve 40:0 75:100`:
+
+| CPU temperature | Fan speed |
+|---|---|
+| 40 °C or less | 0% (the slowest the board allows) |
+| about 57 °C | about 50% |
+| 75 °C or more | 100% |
+| sensor cannot be read | 100% until it can |
+
+## Is this for you?
+
+Only if writing a speed does nothing on your machine. Check (replace `N` with
+your hwmon number, see "Find your paths" below), and **write the original values
+back afterwards**:
+
+```sh
+H=/sys/class/hwmon/hwmonN
+cat $H/pwm3_enable                                  # remember this value
+echo 1  | sudo tee $H/pwm3_enable
+echo 40 | sudo tee $H/pwm3                          # ask for a low speed
+sleep 10; cat $H/fan3_input                         # rpm
+echo 255 | sudo tee $H/pwm3
+sleep 10; cat $H/fan3_input                         # rpm again
+```
+
+If the two rpm numbers differ, your board works normally and you do not need fcp.
+If they are the same, you do.
+
+## Install
+
+You need Linux with systemd, root access and Rust 1.70 or newer.
 
 ```sh
 cargo build --release
-```
-
-The default workspace members build `fcp`, `fcptemp`, `fcpctl`, `fcp-gui`, and the shared `fcp-client` library. The first GUI build also compiles Slint and its Wayland/software-rendering dependencies.
-
-Binaries:
-
-```text
-target/release/fcp
-target/release/fcptemp
-target/release/fcpctl
-target/release/fcp-gui
-```
-
-## Workspace layout
-
-```text
-crates/
-├── fcp/           # Existing low-level PWM service
-├── fcp-client/    # Shared transport, API helpers and manual/automatic handoff
-├── fcptemp/       # Temperature discovery, curves, API and service
-├── fcpctl/        # CLI for both services
-└── fcp-gui/       # Slint GUI and system tray
-schemas/           # API and configuration JSON Schemas
-deploy/systemd/    # Service units
-scripts/           # Existing fanmix helper
-docs/              # Architecture and API documentation
-```
-
-The Slint-based `fcp-gui` uses `fcp-client` rather than implementing the socket protocol independently. The CLI and GUI share socket setup, error handling, and manual/automatic handoff behavior.
-
-## `fcp` installation
-
-Adjust the hardware profile before starting the service. For the currently used ThinkCentre M79 mapping:
-
-```sh
-if [ ! -e /etc/fcp/config.json ]; then sudo install -Dm644 crates/fcp/examples/thinkcentre-m79.json /etc/fcp/config.json; fi
 sudo install -Dm755 target/release/fcp /usr/local/bin/fcp
-sudo install -Dm644 deploy/systemd/fcp.service /etc/systemd/system/fcp.service
+sudo install -Dm644 fcp.service /etc/systemd/system/fcp.service
+sudo install -Dm644 fcp.conf /etc/fcp.conf
+```
+
+Edit `/etc/fcp.conf` (next section), then:
+
+```sh
 sudo systemctl daemon-reload
-sudo systemctl enable --now fcp.service
+sudo systemctl enable --now fcp
+fcp fan list
 ```
 
-The unit uses `/etc/fcp/config.json`, `/var/lib/fcp/state.json`, and `/run/fcp/control.sock`.
+On the first start every fan is in `system` mode: fcp changes nothing until you tell it to.
 
-## `fcptemp` installation
+## Configure
 
-The GUI expects the `fcptemp` API service to be running. A GUI started before the system service may select the per-user socket; restart the GUI after starting the system unit so it reconnects to `/run/fcptemp/control.sock`.
+`/etc/fcp.conf` is a plain text file. `#` starts a comment.
 
-Quick install from the repository root (builds only `fcptemp`, preserves an existing config, and does **not** enable automation):
+```
+frequency 10                 # flips per second
+
+fan CPU_FAN
+    pwm    /sys/class/hwmon/hwmon4/pwm3_enable chip=it8792 min=2 max=0
+    tach   /sys/class/hwmon/hwmon4/fan3_input  chip=it8792
+    sensor /sys/class/hwmon/hwmon3/temp1_input chip=k10temp
+    curve  40:0 75:100
+```
+
+| Line | Meaning |
+|---|---|
+| `frequency` | Flips per second. Default 10, allowed 0.1 to 1000. Higher is smoother for the fan but means more switching. Very short phases get inexact because of OS timer jitter, so raise it only if you can hear the fan pulsing. |
+| `fan NAME` | Starts a fan. The name is what you type in `fcp fan NAME ...`. |
+| `pwm` | The mode-switch file to write. `min=` is the value that means slowest, `max=` the value that means fastest. |
+| `tach` | The file with the fan's rpm. Optional, only for `fcp fan list`. |
+| `sensor` | The file with the temperature, in thousandths of °C (what Linux gives you). Needed for `auto`. |
+| `curve` | Points `TEMP:PERCENT`, in rising temperature order. Straight lines between them, flat outside. Needed for `auto`. |
+| `chip=NAME` | Optional safety. fcp reads `NAME` from the `name` file next to the path and refuses to start if it differs. |
+
+A fan with only `tach` (no `pwm`) is shown in the list but cannot be controlled.
+
+### Find your paths
 
 ```sh
-./scripts/install-fcptemp-service.sh
+grep -H . /sys/class/hwmon/hwmon*/name    # which hwmonN is which chip
+ls /sys/class/hwmon/hwmonN/               # pwm*_enable, fan*_input, temp*_input
 ```
 
-Equivalent manual steps:
+- **Which pwm is which fan:** write `0` to a `pwmN_enable` and watch which
+  `fanN_input` rpm goes up. Then put the old value back.
+- **Which value is slowest:** try the values the file accepts (usually 0, 1, 2).
+  `0` is normally full speed. The one with the lowest rpm is your `min`.
+- **Which sensor is the CPU:** load the CPU
+  (`for i in $(seq $(nproc)); do timeout 30 sh -c 'while :; do :; done' & done`)
+  and see which `temp*_input` climbs with it. On AMD, `k10temp` is the CPU itself.
+
+The hwmon numbers can change after a reboot. With `chip=` in place, fcp then
+refuses to start and tells you which path is wrong, instead of silently driving
+the wrong fan.
+
+## Use
+
+```
+$ fcp fan list
+FAN      MODE     SET      SPEED    TEMP
+CPU_FAN  auto     50%    730 rpm   58 °C
+SYS_FAN  system     -   1100 rpm   58 °C
+
+$ fcp fan CPU_FAN 40       # manual, 40%
+$ fcp fan CPU_FAN auto     # follow the curve
+$ fcp fan CPU_FAN system   # hand the fan back
+$ fcp config-path          # where the config is
+```
+
+No `sudo` needed for these commands.
+
+Each fan is in one of three modes:
+
+- **system**: fcp does not touch the fan. The board does what it always did.
+- **manual**: a fixed percent that you chose.
+- **auto**: the percent follows the curve, re-checked every second.
+
+When a fan goes from `system` to `manual` or `auto`, fcp remembers the value
+the board had set. When it goes back to `system`, that value is written back.
+
+## What happens when
+
+| Situation | Result |
+|---|---|
+| `fcp fan X system` | X goes back to exactly what the board had before fcp. |
+| `systemctl stop fcp` | Same for all fans. The modes are remembered, so the next start continues where you left off. |
+| Reboot | The board starts in its own default. At boot fcp resumes the remembered modes. |
+| Sensor cannot be read | That fan runs at 100% until the sensor works again. A line goes to the log. |
+| fcp is killed hard (`kill -9`, crash) | The fans stay at whatever they were doing, possibly slow. systemd restarts fcp after 2 seconds. `fcp fan X system` then still gives back the right value. |
+| fcp is not running | You cannot control the fans. After a normal stop they are back to the board's own behaviour. |
+
+## Files
+
+| Path | What |
+|---|---|
+| `/etc/fcp.conf` | Config. |
+| `/var/lib/fcp/state` | Modes and remembered board values. Written by fcp, not by hand. |
+| `/run/fcp.sock` | The control socket. |
+
+The environment variables `FCP_CONFIG`, `FCP_STATE` and `FCP_SOCKET` override these.
+Logs: `journalctl -u fcp`.
+
+## Troubleshooting
+
+- **`cannot connect to /run/fcp.sock`**: the daemon is not running. `systemctl status fcp`.
+- **fcp does not start, says a path belongs to another chip**: the hwmon numbers shifted. Fix the paths in `/etc/fcp.conf`.
+- **The fan pulses audibly at low percent**: raise `frequency`, for example to 25.
+- **The fan hunts up and down around one temperature**: the curve is plain, with no smoothing. Make it less steep.
+- **Another tool (`fancontrol`, `thinkfan`, ...) is also running**: stop it. Two programs driving the same fan will fight.
+
+## Good to know
+
+- Anyone with a login on the machine can change fan speeds. The control socket is
+  open to all local users on purpose, so that no `sudo` is needed.
+- fcp does not guard against a stuck sensor that always reports a cool value.
+
+## Uninstall
 
 ```sh
-sudo install -Dm755 target/release/fcptemp /usr/local/bin/fcptemp
-if [ ! -e /etc/fcptemp/config.json ]; then sudo install -Dm644 crates/fcptemp/examples/fcptemp.json /etc/fcptemp/config.json; fi
-sudo install -Dm644 deploy/systemd/fcptemp.service /etc/systemd/system/fcptemp.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now fcptemp.service
+sudo systemctl disable --now fcp      # gives the fans back to the board
+sudo rm /usr/local/bin/fcp /etc/systemd/system/fcp.service /etc/fcp.conf
+sudo rm -r /var/lib/fcp
 ```
 
-By default, temperature automation is **disabled** and the state contains no rules. A client must explicitly configure rules and enable automation. The service's config has these fields:
-
-- `fcp_socket`: path to the `fcp` socket.
-- `hwmon_root`: root to scan for temperature sources; normally `/sys/class/hwmon`.
-- `poll_interval_ms`: sensor/control polling interval from 100 to 60000 ms; default 1000 ms.
-
-Environment overrides:
-
-- `FCPTEMP_CONFIG_PATH` — service config.
-- `FCPTEMP_STATE_PATH` — persistent rules and enabled state.
-- `FCPTEMP_SOCKET_PATH` — API socket.
-
-The default config path for a user-run instance is `~/.config/fcptemp/config.json`. State defaults to `~/.local/state/fcptemp/state.json`; the socket defaults to `$XDG_RUNTIME_DIR/fcptemp.sock` or `~/.local/state/fcptemp/fcptemp.sock`.
-
-## `fcpctl` CLI
-
-Build and run from the workspace root:
-
-```sh
-cargo build --release
-./target/release/fcpctl status
-./target/release/fcpctl fans
-./target/release/fcpctl fan set CPU_FAN 35
-./target/release/fcpctl fan mode CPU_FAN low
-./target/release/fcpctl temp sensors
-./target/release/fcpctl temp rules
-```
-
-`fcpctl status` queries both services and emits JSON containing their results. Other commands emit the corresponding API `data` object. See `docs/fcpctl.md` for all commands and examples.
-
-Manual commands (`fan set` and `fan mode`) use shared `fcp-client` logic: if `fcptemp` has an enabled rule for that fan, the client disables that rule before changing `fcp`. If the `fcptemp` socket cannot be reached, the CLI warns and still applies the manual setting; check that automation is not active via a different socket. If a rule was found but could not be disabled, the manual change is cancelled.
-
-`fcpctl` honors `FCP_SOCKET_PATH` and `FCPTEMP_SOCKET_PATH`. Command-line options `--fcp-socket PATH` and `--fcptemp-socket PATH` override paths for one invocation. Without overrides, the client prefers active system service sockets at `/run/fcp/control.sock` and `/run/fcptemp/control.sock`; otherwise it uses the user-instance defaults described above.
-
-## `fcp-gui` desktop client
-
-```sh
-cargo build --release -p fcp-gui
-./target/release/fcp-gui
-```
-
-The GUI provides manual fan control, temperature sensor status, rule editing for linear/power/points curves, explicit global and per-rule automation toggles, and a system-tray menu. Points are entered as `temperature:throttle` pairs, e.g. `40:50, 50:75`. Rule saves are always disabled first; enabling a rule is a separate action. Closing the main window hides it to the tray; use the tray's Quit command to exit. See `crates/fcp-gui/README.md`.
-
-The GUI forces Slint's `fluent-dark` widget style and a dark application palette; there is no light-theme mode. It uses the cross-platform Winit backend (Wayland/X11 on Linux) and software renderer to avoid a GPU rendering dependency. The system tray requires a host implementing StatusNotifierItem/AppIndicator, such as KDE Plasma.
-
-## `fcptemp` protocol
-
-One JSON object per line over `AF_UNIX` / `SOCK_STREAM`. Each response echoes `id`, and uses the same `ok` / `error.code` / `error.message` envelope as `fcp`. The socket is local and currently has mode `0666`; access is controlled by parent-directory permissions.
-
-List available temperatures, including disabled or invalid sources:
-
-```sh
-printf '%s\n' '{"id":1,"command":"sensors.list"}' | socat - UNIX-CONNECT:/run/fcptemp/control.sock
-```
-
-List rules and current runtime status:
-
-```sh
-printf '%s\n' '{"id":2,"command":"rules.list"}' | socat - UNIX-CONNECT:/run/fcptemp/control.sock
-```
-
-Install a power curve for a fan:
-
-```sh
-printf '%s\n' '{"id":3,"command":"rule.set","rule":{"fan":"CPU_FAN","sensor":"k10temp/temp1","enabled":true,"curve":{"type":"power","min_temp_c":35,"max_temp_c":75,"min_throttle":20,"max_throttle":100,"exponent":2}}}' | socat - UNIX-CONNECT:/run/fcptemp/control.sock
-```
-
-Enable global automation:
-
-```sh
-printf '%s\n' '{"id":4,"command":"control.set","enabled":true}' | socat - UNIX-CONNECT:/run/fcptemp/control.sock
-```
-
-Disable automation globally or for one fan:
-
-```json
-{"id":5,"command":"control.set","enabled":false}
-{"id":6,"command":"control.set","fan":"CPU_FAN","enabled":false}
-```
-
-Delete one fan's temperature rule:
-
-```json
-{"id":7,"command":"rule.delete","fan":"CPU_FAN"}
-```
-
-Available commands are `status`, `sensors.list`, `rules.list`, `rule.set`, `rule.delete`, and `control.set`. See `schemas/fcptemp-api.schema.json` and `docs/fcptemp-api.md`.
-
-### Curve semantics
-
-Every curve specifies minimum/maximum temperature and minimum/maximum throttle. At or below the lower temperature, the service uses the lower throttle. At or above the upper temperature, it uses the upper throttle.
-
-- `linear`: straight interpolation between the endpoints.
-- `power`: `min_throttle + (max_throttle - min_throttle) * x^exponent`, where `x` is normalized to 0–1. An exponent of `2` is quadratic; values above `1` delay the ramp, and values below `1` accelerate it.
-- `points`: linear interpolation through up to eight intermediate `{ "temp_c": ..., "throttle": ... }` milestones plus the configured endpoints.
-
-Temperatures must increase strictly through the milestones; throttle may stay level or increase but may not decrease. The exponent range is `0.25..=8.0`. Rules are unique per fan.
-
-If a sensor stops responding or returns an invalid value, `fcptemp` stops issuing automatic updates for that fan and reports `sensor_unavailable`. It does not force maximum throttle. The last mode/value remains in `fcp` until another client changes it or automation resumes. Stopping `fcptemp` likewise leaves `fcp` settings untouched.
-
-## Schemas and tests
-
-- `schemas/fcp-api.schema.json` — existing `fcp` API.
-- `schemas/fcp-config.schema.json` — `fcp` hardware/profile config.
-- `schemas/fcptemp-api.schema.json` — `fcptemp` requests and rule objects.
-- `schemas/fcptemp-config.schema.json` — service config.
-- `schemas/fcptemp-state.schema.json` — persistent automation state.
-
-Run tests with:
+## Development
 
 ```sh
 cargo test

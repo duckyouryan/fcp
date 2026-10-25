@@ -1,6 +1,0 @@
-{
-  "version": 1,
-  "fcp_socket": "/run/fcp/control.sock",
-  "hwmon_root": "/sys/class/hwmon",
-  "poll_interval_ms": 1000
-}

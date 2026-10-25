@@ -1,18 +1,7 @@
-[workspace]
-resolver = "2"
-members = [
-    "crates/fcp",
-    "crates/fcp-client",
-    "crates/fcptemp",
-    "crates/fcpctl",
-    "crates/fcp-gui",
-]
-default-members = ["crates/fcp", "crates/fcptemp", "crates/fcp-client", "crates/fcpctl", "crates/fcp-gui"]
-
-[workspace.package]
+[package]
+name = "fcp"
+version = "0.2.0"
 edition = "2021"
+description = "Software PWM and temperature curves for fans that only have a few fixed modes"
 
-[workspace.dependencies]
-libc = "0.2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+[dependencies]
